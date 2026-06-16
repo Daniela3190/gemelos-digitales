@@ -1,6 +1,7 @@
-import { readFileSync } from "fs";
-import path from "path";
-import { notFound } from "next/navigation";
+"use client";
+
+import { useParams } from "next/navigation";
+import { useState, useEffect, useMemo } from "react";
 import Link from "next/link";
 import type { User, Viaje, ViajeEventos, ExposureData, Asistencia } from "@/lib/types";
 import { getUserShortId, scoreColor, formatDistance } from "@/lib/utils";
@@ -18,11 +19,6 @@ import ProbabilidadAsistencia from "@/components/ProbabilidadAsistencia";
 import ChatAI from "@/components/ChatAI";
 import MapaRutasClient from "@/components/MapaRutasClient";
 
-function readData<T>(filename: string): T {
-  const dir = path.join(process.cwd(), "public", "data");
-  return JSON.parse(readFileSync(path.join(dir, filename), "utf-8"));
-}
-
 const section = {
   background: "#1e293b",
   borderRadius: 12,
@@ -39,29 +35,91 @@ const sectionTitle = {
   marginBottom: 14,
 } as const;
 
-export default async function GemeloPage({
-  params,
-}: {
-  params: Promise<{ id: string }>;
-}) {
-  const { id } = await params;
+function Skeleton({ h = 200 }: { h?: number }) {
+  return (
+    <div
+      style={{
+        height: h,
+        background: "rgba(255,255,255,0.04)",
+        borderRadius: 8,
+        animation: "pulse 1.5s ease-in-out infinite",
+      }}
+    />
+  );
+}
 
-  const users = readData<User[]>("users.json");
-  const user = users.find((u) => getUserShortId(u.id) === id);
-  if (!user) notFound();
+export default function GemeloPage() {
+  const params = useParams<{ id: string }>();
+  const id = params.id;
 
-  const shortId = getUserShortId(user.id);
-  const viajes = readData<Viaje[]>(`viajes_${shortId}.json`);
-  const eventos = readData<Record<string, ViajeEventos>>(`eventos_${shortId}.json`);
-  const exposure = readData<ExposureData>(`exposure_${shortId}.json`);
-  const asistencias = readData<Asistencia[]>(`asistencias_${shortId}.json`);
-  const siniestroResult = computeProbabilidadSiniestro(user, exposure, asistencias);
-  const asistenciaResult = computeProbabilidadAsistencia(user, exposure, asistencias);
+  const [user, setUser] = useState<User | null>(null);
+  const [viajes, setViajes] = useState<Viaje[]>([]);
+  const [eventos, setEventos] = useState<Record<string, ViajeEventos>>({});
+  const [exposure, setExposure] = useState<ExposureData | null>(null);
+  const [asistencias, setAsistencias] = useState<Asistencia[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  const center: [number, number] = [user.lat ?? -34.6, user.lon ?? -58.45];
-  const score = user.score_promedio?.general ?? 0;
+  useEffect(() => {
+    if (!id) return;
+    setLoading(true);
+    setError(null);
+
+    async function load() {
+      try {
+        // First resolve the user
+        const users: User[] = await fetch("/data/users.json").then((r) => r.json());
+        const found = users.find((u) => getUserShortId(u.id) === id);
+        if (!found) { setError("Gemelo no encontrado"); setLoading(false); return; }
+        setUser(found);
+
+        // Then load all heavy files in parallel
+        const [viajesData, eventosData, exposureData, asistenciasData] = await Promise.all([
+          fetch(`/data/viajes_${id}.json`).then((r) => r.json()),
+          fetch(`/data/eventos_${id}.json`).then((r) => r.json()),
+          fetch(`/data/exposure_${id}.json`).then((r) => r.json()),
+          fetch(`/data/asistencias_${id}.json`).then((r) => r.json()),
+        ]);
+
+        setViajes(viajesData);
+        setEventos(eventosData);
+        setExposure(exposureData);
+        setAsistencias(asistenciasData);
+        setLoading(false);
+      } catch (e) {
+        setError("Error cargando datos del gemelo");
+        setLoading(false);
+        console.error(e);
+      }
+    }
+
+    load();
+  }, [id]);
+
+  const siniestroResult = useMemo(
+    () => (user && exposure ? computeProbabilidadSiniestro(user, exposure, asistencias) : null),
+    [user, exposure, asistencias]
+  );
+
+  const asistenciaResult = useMemo(
+    () => (user && exposure ? computeProbabilidadAsistencia(user, exposure, asistencias) : null),
+    [user, exposure, asistencias]
+  );
+
+  if (error) {
+    return (
+      <div style={{ minHeight: "100vh", background: "#0f172a", color: "#f1f5f9", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 16 }}>
+        <div style={{ fontSize: 32 }}>⚠️</div>
+        <div style={{ fontSize: 16, color: "#ef4444" }}>{error}</div>
+        <Link href="/" style={{ color: "#475569", fontSize: 13 }}>← Volver al universo</Link>
+      </div>
+    );
+  }
+
+  const score = user?.score_promedio?.general ?? 0;
   const color = scoreColor(score);
-  const lastScore = user.score_ultimo;
+  const lastScore = user?.score_ultimo;
+  const center: [number, number] = [user?.lat ?? -34.6, user?.lon ?? -58.45];
 
   return (
     <div style={{ minHeight: "100vh", background: "#0f172a", color: "#f1f5f9" }}>
@@ -81,55 +139,67 @@ export default async function GemeloPage({
         </Link>
         <div style={{ width: 1, height: 16, background: "rgba(255,255,255,0.08)" }} />
         <div>
-          <span style={{ fontSize: 16, fontWeight: 600 }}>{user.nombre}</span>
-          <span style={{ fontSize: 12, color: "#475569", marginLeft: 10 }}>{user.vehiculo?.modelo}</span>
-          <span style={{ fontSize: 11, color: "#334155", marginLeft: 8 }}>· {user.dispositivo}</span>
+          <span style={{ fontSize: 16, fontWeight: 600 }}>
+            {user ? user.nombre : <span style={{ color: "#334155" }}>Cargando…</span>}
+          </span>
+          {user && (
+            <>
+              <span style={{ fontSize: 12, color: "#475569", marginLeft: 10 }}>{user.vehiculo?.modelo}</span>
+              <span style={{ fontSize: 11, color: "#334155", marginLeft: 8 }}>· {user.dispositivo}</span>
+            </>
+          )}
         </div>
 
         {/* Exposure badge */}
-        <div
-          style={{
-            background: exposure.score >= 65 ? "rgba(239,68,68,0.12)" : exposure.score >= 35 ? "rgba(249,115,22,0.12)" : "rgba(34,197,94,0.12)",
-            border: `1px solid ${exposure.score >= 65 ? "rgba(239,68,68,0.3)" : exposure.score >= 35 ? "rgba(249,115,22,0.3)" : "rgba(34,197,94,0.3)"}`,
-            borderRadius: 8,
-            padding: "4px 10px",
-            fontSize: 11,
-            color: exposure.score >= 65 ? "#ef4444" : exposure.score >= 35 ? "#f97316" : "#22c55e",
-          }}
-        >
-          🗺️ Riesgo geográfico: {exposure.label} ({exposure.score})
-        </div>
+        {exposure && (
+          <div
+            style={{
+              background: exposure.score >= 65 ? "rgba(239,68,68,0.12)" : exposure.score >= 35 ? "rgba(249,115,22,0.12)" : "rgba(34,197,94,0.12)",
+              border: `1px solid ${exposure.score >= 65 ? "rgba(239,68,68,0.3)" : exposure.score >= 35 ? "rgba(249,115,22,0.3)" : "rgba(34,197,94,0.3)"}`,
+              borderRadius: 8,
+              padding: "4px 10px",
+              fontSize: 11,
+              color: exposure.score >= 65 ? "#ef4444" : exposure.score >= 35 ? "#f97316" : "#22c55e",
+            }}
+          >
+            🗺️ Riesgo geográfico: {exposure.label} ({exposure.score})
+          </div>
+        )}
 
         {/* Siniestro badge */}
-        <div
-          style={{
-            background: `${siniestroResult.color}15`,
-            border: `1px solid ${siniestroResult.color}50`,
-            borderRadius: 8,
-            padding: "4px 10px",
-            fontSize: 11,
-            color: siniestroResult.color,
-          }}
-        >
-          🚨 Siniestro: {siniestroResult.category} ({siniestroResult.probability}%)
-        </div>
+        {siniestroResult && (
+          <div
+            style={{
+              background: `${siniestroResult.color}15`,
+              border: `1px solid ${siniestroResult.color}50`,
+              borderRadius: 8,
+              padding: "4px 10px",
+              fontSize: 11,
+              color: siniestroResult.color,
+            }}
+          >
+            🚨 Siniestro: {siniestroResult.category} ({siniestroResult.probability}%)
+          </div>
+        )}
 
         {/* Asistencia badge */}
-        <div
-          style={{
-            background: `${asistenciaResult.color}15`,
-            border: `1px solid ${asistenciaResult.color}50`,
-            borderRadius: 8,
-            padding: "4px 10px",
-            fontSize: 11,
-            color: asistenciaResult.color,
-          }}
-        >
-          🔧 Asistencia: {asistenciaResult.category} ({asistenciaResult.probability}%)
-        </div>
+        {asistenciaResult && (
+          <div
+            style={{
+              background: `${asistenciaResult.color}15`,
+              border: `1px solid ${asistenciaResult.color}50`,
+              borderRadius: 8,
+              padding: "4px 10px",
+              fontSize: 11,
+              color: asistenciaResult.color,
+            }}
+          >
+            🔧 Asistencia: {asistenciaResult.category} ({asistenciaResult.probability}%)
+          </div>
+        )}
 
         <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 12 }}>
-          {lastScore && (
+          {lastScore && !loading && (
             <div style={{ textAlign: "right", fontSize: 11, color: "#475569" }}>
               <div>Último mes: {lastScore.cantidad_viajes} viajes</div>
               <div>{formatDistance(lastScore.distancia_total_m)}</div>
@@ -143,7 +213,7 @@ export default async function GemeloPage({
               background: "#1e293b", flexShrink: 0,
             }}
           >
-            <span style={{ fontSize: 15, fontWeight: 700, color }}>{score}</span>
+            <span style={{ fontSize: 15, fontWeight: 700, color }}>{score || "–"}</span>
           </div>
         </div>
       </header>
@@ -160,33 +230,44 @@ export default async function GemeloPage({
         {/* Row 1: Scores + Chart */}
         <div style={{ ...section, gridColumn: "span 3" }}>
           <div style={sectionTitle}>Scores de conducción</div>
-          <div style={{ display: "flex", gap: 24, alignItems: "center", flexWrap: "wrap" }}>
-            <ScoreGauge score={score} label="General" size={100} />
-            <div style={{ width: 1, height: 60, background: "rgba(255,255,255,0.06)", flexShrink: 0 }} />
-            <ScoreGauge score={user.score_promedio?.atencion ?? 0} label="Atención" size={76} />
-            <ScoreGauge score={user.score_promedio?.suavidad ?? 0} label="Suavidad" size={76} />
-            <ScoreGauge score={user.score_promedio?.legal ?? 0} label="Legalidad" size={76} />
-            <div style={{ flex: 1, minWidth: 260 }}>
-              <ScoreChart scores={user.scores_mensuales} />
+          {loading || !user ? (
+            <Skeleton h={100} />
+          ) : (
+            <div style={{ display: "flex", gap: 24, alignItems: "center", flexWrap: "wrap" }}>
+              <ScoreGauge score={score} label="General" size={100} />
+              <div style={{ width: 1, height: 60, background: "rgba(255,255,255,0.06)", flexShrink: 0 }} />
+              <ScoreGauge score={user.score_promedio?.atencion ?? 0} label="Atención" size={76} />
+              <ScoreGauge score={user.score_promedio?.suavidad ?? 0} label="Suavidad" size={76} />
+              <ScoreGauge score={user.score_promedio?.legal ?? 0} label="Legalidad" size={76} />
+              <div style={{ flex: 1, minWidth: 260 }}>
+                <ScoreChart scores={user.scores_mensuales} />
+              </div>
             </div>
-          </div>
+          )}
         </div>
 
         {/* Row 2: Dual probability gauges */}
-        <div style={{ gridColumn: "span 3", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-          <div style={{ ...section, border: `1px solid ${siniestroResult.color}30` }}>
-            <div style={{ ...sectionTitle, color: siniestroResult.color }}>
-              🚨 Probabilidad de Siniestro
+        {(!loading && siniestroResult && asistenciaResult) && (
+          <div style={{ gridColumn: "span 3", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+            <div style={{ ...section, border: `1px solid ${siniestroResult.color}30` }}>
+              <div style={{ ...sectionTitle, color: siniestroResult.color }}>
+                🚨 Probabilidad de Siniestro
+              </div>
+              <ProbabilidadSiniestro result={siniestroResult} />
             </div>
-            <ProbabilidadSiniestro result={siniestroResult} />
-          </div>
-          <div style={{ ...section, border: `1px solid ${asistenciaResult.color}30` }}>
-            <div style={{ ...sectionTitle, color: asistenciaResult.color }}>
-              🔧 Probabilidad de Asistencia
+            <div style={{ ...section, border: `1px solid ${asistenciaResult.color}30` }}>
+              <div style={{ ...sectionTitle, color: asistenciaResult.color }}>
+                🔧 Probabilidad de Asistencia
+              </div>
+              <ProbabilidadAsistencia result={asistenciaResult} asistencias={asistencias} />
             </div>
-            <ProbabilidadAsistencia result={asistenciaResult} asistencias={asistencias} />
           </div>
-        </div>
+        )}
+        {loading && (
+          <div style={{ ...section, gridColumn: "span 3" }}>
+            <Skeleton h={280} />
+          </div>
+        )}
 
         {/* Row 3: Map + Events + Riesgo */}
         <div
@@ -198,23 +279,27 @@ export default async function GemeloPage({
             height: 480,
           }}
         >
-          <MapaRutasClient
-            viajes={viajes}
-            eventos={eventos}
-            center={center}
-            warningPoints={exposure.warning_points}
-          />
+          {loading ? (
+            <Skeleton h={480} />
+          ) : (
+            <MapaRutasClient
+              viajes={viajes}
+              eventos={eventos}
+              center={center}
+              warningPoints={exposure?.warning_points ?? []}
+            />
+          )}
         </div>
 
         {/* Right column: Events + Riesgo Geográfico stacked */}
         <div style={{ display: "flex", flexDirection: "column", gap: 16, minWidth: 0 }}>
           <div style={{ ...section, flexShrink: 0 }}>
             <div style={sectionTitle}>Eventos de conducción</div>
-            <EventosPanel eventos={eventos} />
+            {loading ? <Skeleton h={120} /> : <EventosPanel eventos={eventos} />}
           </div>
           <div style={{ ...section, flex: 1 }}>
             <div style={sectionTitle}>Riesgo geográfico</div>
-            <RiesgoGeografico exposure={exposure} />
+            {loading || !exposure ? <Skeleton h={160} /> : <RiesgoGeografico exposure={exposure} />}
           </div>
         </div>
 
@@ -222,29 +307,35 @@ export default async function GemeloPage({
         <div style={section}>
           <div style={sectionTitle}>
             Últimos viajes
-            <span style={{ fontSize: 10, color: "#334155", fontWeight: 400, marginLeft: 6 }}>
-              ({user.total_viajes} total)
-            </span>
+            {user && (
+              <span style={{ fontSize: 10, color: "#334155", fontWeight: 400, marginLeft: 6 }}>
+                ({user.total_viajes} total)
+              </span>
+            )}
           </div>
-          <ViajesTable viajes={viajes} eventos={eventos} />
+          {loading ? <Skeleton h={200} /> : <ViajesTable viajes={viajes} eventos={eventos} />}
         </div>
 
         <div style={section}>
           <div style={sectionTitle}>ROI del vehículo</div>
-          <PanelROI vehiculo={user.vehiculo} />
+          {loading || !user ? <Skeleton h={200} /> : <PanelROI vehiculo={user.vehiculo} />}
         </div>
 
         <div style={section}>
           <div style={sectionTitle}>Panel de propensión siniestral</div>
-          <PropensionPanel user={user} eventos={eventos} viajes={viajes} />
+          {loading || !user ? (
+            <Skeleton h={200} />
+          ) : (
+            <PropensionPanel user={user} eventos={eventos} viajes={viajes} />
+          )}
         </div>
 
         {/* Row 5: Chat AI */}
         <div style={{ ...section, gridColumn: "span 3" }}>
           <div style={sectionTitle}>
-            Chat con IA · Gemelo de {user.nombre.split(" ")[0]}
+            Chat con IA · Gemelo de {user?.nombre?.split(" ")[0] ?? "…"}
           </div>
-          <ChatAI user={user} />
+          {user ? <ChatAI user={user} /> : <Skeleton h={200} />}
         </div>
       </div>
     </div>
