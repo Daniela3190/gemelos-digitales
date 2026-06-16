@@ -2,6 +2,7 @@
 
 import Link from 'next/link'
 import { useParams } from 'next/navigation'
+import dynamic from 'next/dynamic'
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts'
 import {
   GEMELOS, calcularCombustible,
@@ -9,6 +10,15 @@ import {
 } from '@/lib/mock-gemelos'
 import { DRIVER_ROUTES } from '@/lib/mock-drivers'
 import { detectarPeajes, type PeajeDetectado } from '@/lib/corredores'
+
+const MapaRutaGemelo = dynamic(() => import('@/components/MapaRutaGemelo'), {
+  ssr: false,
+  loading: () => (
+    <div style={{ height: '100%', background: '#0f172a', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#334155', fontSize: 13 }}>
+      Cargando mapa…
+    </div>
+  ),
+})
 
 // ─── Gauge semicircular SVG ─────────────────────────────────────────────────
 
@@ -173,6 +183,17 @@ export default function GemeloPage() {
               </div>
             </div>
           </div>
+
+          {/* ── Mapa de ruta ── */}
+          {driverRoute && (
+            <div className="bg-white rounded-xl border border-gray-100 overflow-hidden" style={{ height: 340 }}>
+              <MapaRutaGemelo
+                polyline={driverRoute.polyline}
+                color={g.color}
+                nombre={g.nombre}
+              />
+            </div>
+          )}
 
           {/* ── Probabilidades ── */}
           <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
