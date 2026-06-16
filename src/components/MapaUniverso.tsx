@@ -1,211 +1,144 @@
-"use client";
+'use client'
 
-import { MapContainer, TileLayer, Marker, Popup } from "react-leaflet";
-import * as L from "leaflet";
-import type { User } from "@/lib/types";
-import type { Indicadores } from "@/app/page";
-import { getUserShortId, scoreColor, scoreLabel } from "@/lib/utils";
+import { useEffect, useRef } from 'react'
+import { useRouter } from 'next/navigation'
+import * as L from 'leaflet'
+import { decodePolyline } from '@/lib/polyline'
+import { DRIVER_ROUTES, SINIESTROS } from '@/lib/mock-drivers'
 
-// Fix Leaflet default icon paths broken by webpack
-delete (L.Icon.Default.prototype as unknown as Record<string, unknown>)._getIconUrl;
-L.Icon.Default.mergeOptions({
-  iconUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png",
-  iconRetinaUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png",
-  shadowUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
-});
+export default function MapaUniverso() {
+  const containerRef = useRef<HTMLDivElement>(null)
+  const mapRef = useRef<L.Map | null>(null)
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const router = useRouter()
+  const routerRef = useRef(router)
+  routerRef.current = router
 
-function createScoreIcon(score: number): L.DivIcon {
-  const color = scoreColor(score);
-  return L.divIcon({
-    className: "",
-    html: `<div style="
-      background:#1e293b;
-      border:3px solid ${color};
-      border-radius:50%;
-      width:52px;height:52px;
-      display:flex;align-items:center;justify-content:center;
-      color:${color};font-weight:700;font-size:15px;
-      font-family:system-ui;
-      box-shadow:0 2px 16px rgba(0,0,0,0.7);
-      cursor:pointer;
-    ">${score}</div>`,
-    iconSize: [52, 52],
-    iconAnchor: [26, 26],
-    popupAnchor: [0, -32],
-  });
-}
+  useEffect(() => {
+    if (mapRef.current || !containerRef.current) return
 
-export default function MapaUniverso({
-  users,
-  indicadores,
-}: {
-  users: User[];
-  indicadores: Indicadores;
-}) {
-  const valid = users.filter((u) => u.lat != null && u.lon != null);
+    const map = L.map(containerRef.current, {
+      center: [-34.6037, -58.3816],
+      zoom: 12,
+      preferCanvas: true,
+      zoomControl: true,
+    })
+
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+      attribution: '&copy; <a href="https://carto.com/">CARTO</a>',
+      subdomains: 'abcd',
+      maxZoom: 19,
+    }).addTo(map)
+
+    mapRef.current = map
+    const routeLayers: L.Polyline[] = []
+
+    for (const driver of DRIVER_ROUTES) {
+      const coords = decodePolyline(driver.polyline)
+
+      const polyline = L.polyline(coords, {
+        color: driver.color,
+        weight: 4,
+        opacity: 0.4,
+      }).addTo(map)
+
+      polyline.bindTooltip(
+        `<strong>${driver.name}</strong><br><span style="font-size:11px;color:#94a3b8">Ver gemelo digital →</span>`,
+        { sticky: true }
+      )
+
+      polyline.on('click', () => {
+        routerRef.current.push(driver.twinHref)
+      })
+
+      const lastPos = coords[coords.length - 1]
+      L.circleMarker(lastPos, {
+        radius: 7,
+        color: '#ffffff',
+        fillColor: driver.color,
+        fillOpacity: 1,
+        weight: 2.5,
+      })
+        .bindTooltip(`${driver.name} — en ruta`, { permanent: false })
+        .addTo(map)
+
+      routeLayers.push(polyline)
+    }
+
+    for (const s of SINIESTROS) {
+      const radius = 5 + s.severity * 3
+      L.circleMarker([s.lat, s.lng], {
+        radius,
+        color: '#ef4444',
+        fillColor: '#ef4444',
+        fillOpacity: 0.15 + s.severity * 0.08,
+        weight: 1,
+      })
+        .bindTooltip(
+          `<strong>Siniestro</strong><br>Severidad: ${'●'.repeat(s.severity)}${'○'.repeat(3 - s.severity)}`,
+          { sticky: true }
+        )
+        .addTo(map)
+    }
+
+    // Breathing animation: 10 pasos × 300ms = 3s por ciclo
+    let phase = 0
+    intervalRef.current = setInterval(() => {
+      phase += (2 * Math.PI) / 10
+      const opacity = 0.2 + 0.2 * (1 + Math.sin(phase))
+      routeLayers.forEach(l => l.setStyle({ opacity }))
+    }, 300)
+
+    return () => {
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current)
+        intervalRef.current = null
+      }
+      if (mapRef.current) {
+        mapRef.current.remove()
+        mapRef.current = null
+      }
+    }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
-    <MapContainer
-      center={[-37, -63]}
-      zoom={5}
-      style={{ height: "100%", width: "100%" }}
-      zoomControl
-    >
-      <TileLayer
-        url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
-        attribution='&copy; <a href="https://carto.com/">CARTO</a>'
-        subdomains="abcd"
-        maxZoom={19}
-      />
-      {valid.map((user) => {
-        const score = user.score_promedio?.general ?? 0;
-        const shortId = getUserShortId(user.id);
-        const ind = indicadores[shortId];
+    <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+      <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
 
-        return (
-          <Marker
-            key={user.id}
-            position={[user.lat!, user.lon!]}
-            icon={createScoreIcon(score)}
-          >
-            <Popup>
-              <div style={{ minWidth: 200, fontFamily: "system-ui" }}>
-                {/* Name + vehicle */}
-                <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 2, color: "#f1f5f9" }}>
-                  {user.nombre}
-                </div>
-                <div style={{ fontSize: 12, color: "#64748b", marginBottom: 10 }}>
-                  {user.vehiculo?.modelo}
-                </div>
-
-                {/* Sub-scores */}
-                <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
-                  {(
-                    [
-                      ["Atención", user.score_promedio?.atencion ?? 0],
-                      ["Suavidad", user.score_promedio?.suavidad ?? 0],
-                      ["Legal", user.score_promedio?.legal ?? 0],
-                    ] as [string, number][]
-                  ).map(([label, s]) => (
-                    <div
-                      key={label}
-                      style={{
-                        flex: 1,
-                        textAlign: "center",
-                        background: "#0f172a",
-                        borderRadius: 6,
-                        padding: "5px 3px",
-                      }}
-                    >
-                      <div style={{ color: scoreColor(s), fontWeight: 700, fontSize: 15 }}>{s}</div>
-                      <div style={{ fontSize: 9, color: "#475569" }}>{label}</div>
-                    </div>
-                  ))}
-                </div>
-
-                <div
-                  style={{
-                    fontSize: 11,
-                    color: scoreColor(score),
-                    marginBottom: 10,
-                    textAlign: "center",
-                  }}
-                >
-                  {scoreLabel(score)}
-                </div>
-
-                {/* Dual risk indicators */}
-                {ind && (
-                  <>
-                    <div
-                      style={{
-                        borderTop: "1px solid rgba(255,255,255,0.06)",
-                        paddingTop: 10,
-                        marginBottom: 10,
-                        display: "grid",
-                        gridTemplateColumns: "1fr 1fr",
-                        gap: 6,
-                      }}
-                    >
-                      {/* Indicator 1: Siniestro */}
-                      <div
-                        style={{
-                          background: "#0f172a",
-                          borderRadius: 7,
-                          padding: "7px 8px",
-                          textAlign: "center",
-                          border: `1px solid ${ind.siniestroColor}25`,
-                        }}
-                      >
-                        <div style={{ fontSize: 9, color: "#475569", marginBottom: 2 }}>
-                          🚨 Siniestro
-                        </div>
-                        <div
-                          style={{
-                            fontSize: 13,
-                            fontWeight: 700,
-                            color: ind.siniestroColor,
-                          }}
-                        >
-                          {ind.siniestroCategory}
-                        </div>
-                        <div style={{ fontSize: 10, color: "#334155" }}>
-                          {ind.siniestro}%
-                        </div>
-                      </div>
-
-                      {/* Indicator 2: Asistencia */}
-                      <div
-                        style={{
-                          background: "#0f172a",
-                          borderRadius: 7,
-                          padding: "7px 8px",
-                          textAlign: "center",
-                          border: `1px solid ${ind.asistenciaColor}25`,
-                        }}
-                      >
-                        <div style={{ fontSize: 9, color: "#475569", marginBottom: 2 }}>
-                          🔧 Asistencia
-                        </div>
-                        <div
-                          style={{
-                            fontSize: 13,
-                            fontWeight: 700,
-                            color: ind.asistenciaColor,
-                          }}
-                        >
-                          {ind.asistenciaCategory}
-                        </div>
-                        <div style={{ fontSize: 10, color: "#334155" }}>
-                          {ind.asistencia}%
-                        </div>
-                      </div>
-                    </div>
-                  </>
-                )}
-
-                {/* Link */}
-                <a
-                  href={`/gemelo/${shortId}`}
-                  style={{
-                    display: "block",
-                    textAlign: "center",
-                    background: "#1d4ed8",
-                    color: "white",
-                    borderRadius: 6,
-                    padding: "6px 12px",
-                    fontSize: 12,
-                    textDecoration: "none",
-                    fontWeight: 600,
-                  }}
-                >
-                  Ver gemelo →
-                </a>
-              </div>
-            </Popup>
-          </Marker>
-        );
-      })}
-    </MapContainer>
-  );
+      {/* Leyenda */}
+      <div
+        style={{
+          position: 'absolute',
+          bottom: 32,
+          right: 16,
+          zIndex: 1000,
+          background: 'rgba(15, 23, 42, 0.92)',
+          backdropFilter: 'blur(8px)',
+          borderRadius: 12,
+          border: '1px solid rgba(255,255,255,0.1)',
+          padding: 16,
+          minWidth: 144,
+          pointerEvents: 'auto',
+        }}
+      >
+        <p style={{ fontSize: 10, fontWeight: 600, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 12 }}>
+          Conductores
+        </p>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {DRIVER_ROUTES.map(driver => (
+            <div key={driver.id} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <span style={{ width: 20, height: 3, borderRadius: 2, backgroundColor: driver.color, flexShrink: 0, display: 'inline-block' }} />
+              <span style={{ fontSize: 13, fontWeight: 500, color: '#e2e8f0' }}>{driver.name}</span>
+            </div>
+          ))}
+        </div>
+        <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span style={{ width: 12, height: 12, borderRadius: '50%', backgroundColor: 'rgba(239,68,68,0.6)', flexShrink: 0, display: 'inline-block' }} />
+            <span style={{ fontSize: 11, color: '#64748b' }}>Siniestro</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
 }
