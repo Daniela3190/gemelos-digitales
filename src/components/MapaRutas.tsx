@@ -3,12 +3,11 @@
 import { useState, useEffect, useMemo } from "react";
 import { MapContainer, TileLayer, Polyline, Marker, useMap } from "react-leaflet";
 import * as L from "leaflet";
-import "leaflet.heat";
 import type { Viaje, ViajeEventos, GridCell } from "@/lib/types";
 import { EVENTO_CONFIG } from "@/lib/utils";
 
-// ── Heat map layer (leaflet.heat, canvas-based) ──────────────────────────────
-function HeatMapLayer({
+// ── CircleMarker heat layer (reemplaza leaflet.heat) ─────────────────────────
+function CircleHeatLayer({
   cells,
   showLeve,
   showGrave,
@@ -26,37 +25,36 @@ function HeatMapLayer({
   useEffect(() => {
     if (!visible || cells.length === 0) return;
 
-    const pts: [number, number, number][] = [];
+    const renderer = L.canvas();
+    const markers: L.CircleMarker[] = [];
+
     for (const [lat, lon, l, g, m] of cells) {
       const w =
         (showLeve ? l * 0.3 : 0) +
         (showGrave ? g * 0.7 : 0) +
         (showMortal ? m * 1.0 : 0);
-      if (w > 0) pts.push([lat, lon, w]);
+      if (w < 1) continue;
+
+      const color = w > 10 ? "#ef4444" : w > 4 ? "#f97316" : "#eab308";
+      const marker = L.circleMarker([lat, lon], {
+        radius: Math.min(Math.sqrt(w) * 4, 20),
+        fillColor: color,
+        fillOpacity: 0.45,
+        stroke: false,
+        renderer,
+      }).addTo(map);
+      markers.push(marker);
     }
 
-    const layer = L.heatLayer(pts, {
-      radius: 22,
-      blur: 18,
-      maxZoom: 17,
-      max: 8,
-      minOpacity: 0.04,
-      gradient: {
-        0.0: "rgba(34,197,94,0)",
-        0.25: "rgba(250,204,21,0.7)",
-        0.55: "rgba(249,115,22,0.9)",
-        0.75: "rgba(239,68,68,1.0)",
-        1.0:  "rgba(127,29,29,1.0)",
-      },
-    }).addTo(map);
-
-    return () => { map.removeLayer(layer); };
+    return () => {
+      markers.forEach((mk) => map.removeLayer(mk));
+    };
   }, [map, cells, showLeve, showGrave, showMortal, visible]);
 
   return null;
 }
 
-// ── Warning icon (⚠️ at pre-computed danger spots) ──────────────────────────
+// ── Warning icon ─────────────────────────────────────────────────────────────
 const warnIcon = L.divIcon({
   className: "",
   html: `<div style="font-size:16px;filter:drop-shadow(0 1px 3px rgba(0,0,0,0.95));cursor:pointer">⚠️</div>`,
@@ -138,7 +136,7 @@ export default function MapaRutas({ viajes, eventos, center, warningPoints }: Pr
           maxZoom={19}
         />
 
-        <HeatMapLayer
+        <CircleHeatLayer
           cells={grid}
           showLeve={showLeve}
           showGrave={showGrave}
@@ -183,7 +181,7 @@ export default function MapaRutas({ viajes, eventos, center, warningPoints }: Pr
           fontFamily: "system-ui",
         }}
       >
-        {/* Heat map panel */}
+        {/* Siniestros panel */}
         <div
           style={{
             background: "rgba(10,18,30,0.92)",
@@ -194,18 +192,14 @@ export default function MapaRutas({ viajes, eventos, center, warningPoints }: Pr
           }}
         >
           <div style={{ fontSize: 10, color: "#475569", fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: 7 }}>
-            Mapa de calor · CABA
+            Siniestros viales · CABA
           </div>
 
           <button
             onClick={() => setShowHeat((v) => !v)}
-            style={{
-              ...pill(showHeat, "rgba(239,68,68,0.85)"),
-              width: "100%",
-              marginBottom: 6,
-            }}
+            style={{ ...pill(showHeat, "rgba(239,68,68,0.85)"), width: "100%", marginBottom: 6 }}
           >
-            🔥 {showHeat ? "Ocultar" : "Mostrar"} calor ({grid.length.toLocaleString()} celdas)
+            🔴 {showHeat ? "Ocultar" : "Mostrar"} siniestros ({grid.length.toLocaleString()} zonas)
           </button>
 
           {showHeat && (
@@ -217,7 +211,7 @@ export default function MapaRutas({ viajes, eventos, center, warningPoints }: Pr
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                 <span style={{ fontSize: 9, color: "#334155" }}>bajo</span>
-                <div style={{ flex: 1, height: 5, borderRadius: 3, background: "linear-gradient(to right,rgba(250,204,21,0.7),rgba(249,115,22,0.9),rgba(239,68,68,1),rgba(127,29,29,1))" }} />
+                <div style={{ flex: 1, height: 5, borderRadius: 3, background: "linear-gradient(to right,#eab308,#f97316,#ef4444)" }} />
                 <span style={{ fontSize: 9, color: "#334155" }}>alto</span>
               </div>
             </>
